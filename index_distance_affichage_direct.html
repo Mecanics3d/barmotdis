@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Servo micro:bit</title>
+<style>
+  /* ---------- Apparence de la page ---------- */
+  :root { color-scheme: light dark; }            /* thème clair/sombre automatique */
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 12px;
+         display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  h1 { font-size: 1.15rem; margin: 0; }
+  .top { width: 100%; max-width: 420px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #status { font-size: .9rem; opacity: .8; text-align: center; margin-top: -4px; }   /* ligne d'état / erreurs */
+  #angle { font-size: 1.3rem; font-weight: 700; line-height: 1; text-align: center; }                      /* angle affiché en grand */
+  .box { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; gap: 12px; align-items: center; }
+  .scale { display: flex; justify-content: space-between; font-size: .8rem; opacity: .6; }
+  label { font-size: .95rem; opacity: .8; }
+
+  /* Curseur : barre épaisse et grosse poignée, faciles à manipuler au doigt */
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 64px;
+                      background: transparent; margin: 0; touch-action: pan-y; }
+  input[type=range]::-webkit-slider-runnable-track { height: 16px; border-radius: 8px; background: rgba(127,127,127,.45); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 56px; height: 56px;
+                      border-radius: 50%; border: 0; background: #2563eb; margin-top: -20px; }
+  input[type=range]::-moz-range-track { height: 16px; border-radius: 8px; background: rgba(127,127,127,.45); }
+  input[type=range]::-moz-range-thumb { width: 56px; height: 56px; border-radius: 50%; border: 0; background: #2563eb; }
+  input[type=range]:disabled { opacity: .4; }
+
+  /* Accélérateur : curseur horizontal tourné de 90° pour devenir vertical
+     (méthode qui marche sur tous les navigateurs, dont Bluefy/iOS).
+     Bas = 0 %, haut = 100 %. */
+  .accel { display: flex; gap: 24px; align-items: center; justify-content: center; }
+  .vwrap { position: relative; width: 70px; height: 220px; flex: none; }
+  #accel { position: absolute; left: 50%; top: 50%; width: 220px;
+           transform: translate(-50%, -50%) rotate(-90deg);
+           touch-action: none; }                   /* évite que la page défile pendant qu'on pousse */
+  /* Poignée rectangulaire (type "fader") : 30 px dans le sens de la course, 80 px de large une fois le curseur redressé */
+  #accel::-webkit-slider-thumb { background: #ea580c; width: 30px; height: 80px; border-radius: 6px; margin-top: -32px; }
+  #accel::-moz-range-thumb { background: #ea580c; width: 30px; height: 80px; border-radius: 6px; }
+  .accelside { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  #speed { font-size: 2.2rem; font-weight: 700; min-width: 140px; text-align: center; }
+
+  /* Boutons */
+  button { flex: 1; font-size: 1.2rem; padding: 12px 0; border: 0; border-radius: 14px;
+           background: #2563eb; color: #fff; touch-action: manipulation;
+           -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  button:active { transform: scale(.97); }
+  button:disabled { opacity: .35; }              /* grisés tant qu'on n'est pas connecté */
+  #connect { background: #16a34a; flex: none; padding: 8px 18px; font-size: 1rem; border-radius: 10px; }
+  #reset { background: #6b7280; padding: 14px 0; font-size: 1.1rem; }
+  #stop { background: #dc2626; flex: none; padding: 16px 28px; font-weight: 700; }
+  /* Distance sonar : dernière mesure reçue, affichée en bas à droite */
+  #dist { position: fixed; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+          padding: 8px 14px; border-radius: 12px; background: rgba(37,99,235,.92); color: #fff;
+          font-size: 1.6rem; font-weight: 700; line-height: 1.1; text-align: right;
+          pointer-events: none; display: none; }
+  #dist small { display: block; font-size: .7rem; font-weight: 400; opacity: .8; }
+  .trimval { min-width: 80px; text-align: center; font-size: 1.4rem; font-weight: 600; }
+  #trim0 { flex: 0 0 auto; padding: 12px 14px; background: #6b7280; font-size: 1rem; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1>Servo micro:bit <small style="opacity:.4">v18</small></h1>
+    <button id="connect">Connecter le micro:bit</button>
+  </div>
+  <div id="status">Non connecté</div>
+
+  <div class="box">
+    <!-- Le curseur va de -100 à +100 : 0 (le milieu) correspond à 90°. La conversion en degrés est faite dans le script. -->
+    <input type="range" id="slider" min="-100" max="100" step="1" value="0" disabled>
+    <div class="scale"><span>40° Babord</span><span>barre à 0°</span><span>Tribord 40°</span></div>
+    <div id="angle">--° servo</div>
+    <button id="reset" disabled>Retour barre à 0°</button>
+  </div>
+
+  <div class="box">
+    <label>Trim : décalage du centre (±15°)</label>
+    <div class="row">
+      <button id="trimMinus" disabled>−1°</button>
+      <div class="trimval" id="trimval">0°</div>
+      <button id="trimPlus" disabled>+1°</button>
+      <button id="trim0" disabled>0</button>
+    </div>
+  </div>
+
+  <!-- NOUVEAU : accélérateur des 2 moteurs (M2 et M3, synchronisés) -->
+  <div class="box">
+    <label style="text-align:center">Accélérateur (moteurs M2 + M3)</label>
+    <div class="accel">
+      <div class="vwrap">
+        <input type="range" id="accel" min="0" max="100" step="1" value="0" disabled>
+      </div>
+      <div class="accelside">
+        <div id="speed">--%</div>
+        <button id="stop" disabled>STOP</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Distance du sonar (bas à droite, masquée tant qu'elle n'est pas valide) -->
+  <div id="dist"><small>Distance</small><span id="distval">-- cm</span></div>
+
+<script>
+/* =====================================================================
+   PRINCIPE DE FONCTIONNEMENT
+   - La page parle au micro:bit en Bluetooth, via son service "UART"
+     (une sorte de port série sans fil).
+   - La page envoie de petites commandes texte, une par ligne :
+         S<angle>   ex. S110  -> aller à l'angle 110°
+         T<trim>    ex. T-3   -> régler le trim à -3°
+         M<vitesse> ex. M60   -> moteurs M2 et M3 à 60 % (0 = arrêt)
+         C                    -> retour à 90°
+         ?                    -> demander l'état actuel
+   - Le micro:bit répond par une ligne du type  "A:110,T:-3,M:60"
+     (A = angle, T = trim, M = vitesse des moteurs en %) pour que la
+     page affiche la valeur réelle.
+   - Le micro:bit envoie aussi la distance du sonar en cm : "D:123"
+     (dans la même ligne ou dans une ligne à part, peu importe).
+   ===================================================================== */
+
+// Identifiants Bluetooth du service UART du micro:bit.
+// (Attention : base "b5a3", différente de celle du standard Nordic.)
+const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // la page ÉCRIT ici  -> micro:bit
+const TX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // le micro:bit ÉCRIT ici -> page
+
+// ----- Affichage direct de la distance du sonar -----
+const DIST_TIMEOUT = 2500; // ms sans mesure reçue -> l'affichage disparaît
+let distTimer = null;
+
+function hideDist() {
+  $('dist').style.display = 'none';
+}
+function onDist(d) {
+  if (!Number.isFinite(d) || d <= 0) {
+    $('distval').textContent = '-- cm';
+    hideDist();
+    clearTimeout(distTimer);
+    return;
+  }
+
+  // Affiche immédiatement chaque nouvelle mesure reçue du micro:bit.
+  $('distval').textContent = Math.round(d) + ' cm';
+  $('dist').style.display = 'block';
+
+  clearTimeout(distTimer);
+  distTimer = setTimeout(hideDist, DIST_TIMEOUT);
+}
+
+const TRIM_MAX = 15;                               // trim limité à ±15°
+const A_MIN = 40, A_CENTER = 90, A_MAX = 140;      // limites d'angle et centre
+
+// Conversion curseur <-> angle.
+// Le curseur va de -100 à +100 ; son milieu (0) correspond à 90°.
+// toAngle : position du curseur -> angle en degrés (arrondi à l'entier)
+const toAngle = v => Math.round(v <= 0 ? A_CENTER + v * (A_CENTER - A_MIN) / 100
+                                       : A_CENTER + v * (A_MAX - A_CENTER) / 100);
+// toPos : angle en degrés -> position du curseur (sert quand le micro:bit nous renvoie l'angle)
+const toPos = a => a <= A_CENTER ? (a - A_CENTER) * 100 / (A_CENTER - A_MIN)
+                                 : (a - A_CENTER) * 100 / (A_MAX - A_CENTER);
+let lastAngle = null;                              // dernier angle envoyé (évite les envois en double)
+let lastSpeed = null;                              // dernière vitesse moteurs envoyée (idem)
+
+let device, rxChar;                                // appareil Bluetooth et caractéristique d'écriture
+let buffer = '';                                   // texte reçu en attente d'une fin de ligne
+let dragging = false;                              // vrai pendant qu'on touche le curseur du servo
+let draggingM = false;                             // vrai pendant qu'on touche l'accélérateur
+let sending = false;                               // vrai pendant qu'un envoi est en cours
+const slot = {};                                   // "boîte aux lettres" : dernière commande par type
+
+const $ = id => document.getElementById(id);       // raccourci pour trouver un élément de la page
+const enc = new TextEncoder(), dec = new TextDecoder();   // texte <-> octets
+// Transforme une erreur en texte lisible
+const errText = e => (e && (e.name || e.message)) ? ((e.name || '') + ' ' + (e.message || '')).trim() : String(e);
+
+// Le trim est mémorisé sur le téléphone et renvoyé à la carte à chaque connexion
+// (la carte, elle, l'oublie quand on l'éteint).
+let trim = 0;
+try { trim = parseInt(localStorage.getItem('servoTrim')) || 0; } catch (e) {}
+const showTrim = t => $('trimval').textContent = (t > 0 ? '+' : '') + t + '°';
+showTrim(trim);
+
+// Active/désactive les contrôles selon l'état de la connexion
+function setConnected(on) {
+  ['slider', 'reset', 'trimMinus', 'trimPlus', 'trim0', 'accel', 'stop'].forEach(id => $(id).disabled = !on);
+  $('connect').textContent = on ? 'Déconnecter' : 'Connecter le micro:bit';
+  $('status').textContent = on ? 'Connecté à ' + device.name : 'Non connecté';
+  if (!on) {
+    $('angle').textContent = '--° servo'; $('speed').textContent = '--%';
+    $('accel').value = 0; lastSpeed = null;
+    rxChar = null; for (const k in slot) delete slot[k];
+    distHist = []; clearTimeout(distTimer); hideDist();
+  }
+}
+
+/* ---------- Envoi des commandes ----------
+   Quand on glisse un curseur, des dizaines de valeurs sont produites par
+   seconde. Pour ne pas saturer le Bluetooth, on garde seulement la DERNIÈRE
+   valeur de chaque type de commande ("dernière valeur gagnante"). */
+function send(key, cmd) {
+  if (!rxChar) return;                             // pas connecté : on ne fait rien
+  slot[key] = cmd;                                 // on remplace l'éventuelle commande en attente
+  flush();                                         // et on lance l'envoi
+}
+async function flush() {
+  if (sending) return;                             // un envoi est déjà en cours : il enverra aussi la nouvelle valeur
+  sending = true;
+  try {
+    // tant qu'il reste une commande dans la boîte aux lettres, on l'envoie
+    for (let k; (k = Object.keys(slot)[0]) !== undefined; ) {
+      const cmd = slot[k]; delete slot[k];
+      if (!rxChar) break;
+      const data = enc.encode(cmd + '\n');         // la fin de ligne indique au micro:bit que la commande est complète
+      if (rxChar.properties.writeWithoutResponse) await rxChar.writeValueWithoutResponse(data);  // plus rapide
+      else await rxChar.writeValue(data);
+    }
+  } catch (e) { $('status').textContent = 'Erreur envoi : ' + errText(e); }
+  sending = false;
+}
+
+/* ---------- Réception ----------
+   Le micro:bit envoie des lignes "A:90,T:0,M:0". Les données peuvent arriver
+   en morceaux : on les accumule dans "buffer" et on traite ligne par ligne. */
+function onData(e) {
+  buffer += dec.decode(e.target.value);
+  let i;
+  while ((i = buffer.indexOf('\n')) >= 0) {        // tant qu'une ligne complète est disponible
+    const line = buffer.slice(0, i).trim();
+    buffer = buffer.slice(i + 1);
+    line.split(',').forEach(part => {              // "A:90", "T:0" et "M:0"
+      const [k, v] = part.split(':');
+      if (k === 'A') {
+        $('angle').textContent = v + '° servo';          // affiche l'angle réel
+        if (!dragging) $('slider').value = toPos(parseInt(v));   // cale le curseur (sauf si on le tient)
+      } else if (k === 'T') {
+        showTrim(parseInt(v) || 0);                // affiche le trim réel
+      } else if (k === 'D') {
+        onDist(parseFloat(v));                     // distance du sonar (cm)
+      } else if (k === 'M') {
+        const m = parseInt(v) || 0;
+        $('speed').textContent = m + '%';          // affiche la vitesse réelle des moteurs
+        if (!draggingM) { $('accel').value = m; lastSpeed = m; }  // cale l'accélérateur (sauf si on le tient)
+      }
+    });
+  }
+}
+
+/* ---------- Connexion Bluetooth ---------- */
+async function connect() {
+  if (!navigator.bluetooth) {                      // Safari ne gère pas le Bluetooth web : il faut Bluefy
+    $('status').textContent = 'Web Bluetooth indisponible : ouvrez cette page dans Bluefy';
+    return;
+  }
+  try {
+    // 1. L'utilisateur choisit l'appareil dans une liste ("BBC micro:bit [xxxxx]")
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [SERVICE]                  // on déclare le service qu'on veut utiliser
+    });
+    device.addEventListener('gattserverdisconnected', () => setConnected(false));
+
+    // 2. Connexion, puis accès au service UART et à ses deux "canaux"
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    rxChar = await service.getCharacteristic(RX);          // canal d'envoi vers la carte
+    const txChar = await service.getCharacteristic(TX);    // canal de réception depuis la carte
+
+    // 3. On s'abonne aux messages de la carte
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onData);
+
+    setConnected(true);
+    send('T', 'T' + trim);                         // renvoie le trim mémorisé à la carte
+    send('?', '?');                                // demande l'état actuel (angle, trim, vitesse)
+  } catch (e) {
+    $('status').textContent = 'Échec de connexion : ' + errText(e);
+  }
+}
+
+/* ---------- Réglage du trim ---------- */
+function setTrim(t) {
+  trim = Math.max(-TRIM_MAX, Math.min(TRIM_MAX, t));   // reste entre -15 et +15
+  showTrim(trim);
+  try { localStorage.setItem('servoTrim', String(trim)); } catch (e) {}   // mémorisé sur le téléphone
+  send('T', 'T' + trim);
+}
+
+/* ---------- Curseur du servo ---------- */
+const slider = $('slider');
+slider.addEventListener('pointerdown', () => dragging = true);                  // on touche le curseur
+['pointerup', 'pointercancel', 'change'].forEach(ev =>
+  slider.addEventListener(ev, () => dragging = false));                         // on le relâche
+slider.addEventListener('input', () => {                                        // il bouge
+  const a = toAngle(parseInt(slider.value));       // position -> degrés
+  $('angle').textContent = a + '° servo';                // affichage immédiat
+  if (a !== lastAngle) { lastAngle = a; send('S', 'S' + a); }   // on n'envoie que si l'angle a changé
+});
+
+/* ---------- Accélérateur (moteurs M2 + M3) ----------
+   Le curseur vertical va de 0 à 100 (%). Il reste où on le laisse
+   (comme une manette de gaz) ; le bouton STOP le ramène à 0. */
+const accel = $('accel');
+accel.addEventListener('pointerdown', () => draggingM = true);
+['pointerup', 'pointercancel', 'change'].forEach(ev =>
+  accel.addEventListener(ev, () => draggingM = false));
+accel.addEventListener('input', () => {
+  const v = parseInt(accel.value);
+  $('speed').textContent = v + '%';                // affichage immédiat
+  if (v !== lastSpeed) { lastSpeed = v; send('M', 'M' + v); }   // on n'envoie que si la vitesse a changé
+});
+
+/* ---------- Boutons ---------- */
+$('connect').onclick = () => {
+  if (device && device.gatt.connected) {           // 2e appui : déconnexion
+    send('M', 'M0');                               // par sécurité, on coupe les moteurs d'abord
+    setTimeout(() => { if (device.gatt.connected) device.gatt.disconnect(); }, 200);
+  } else connect();
+};
+$('reset').onclick = () => {                       // retour à 90° (le trim est conservé)
+  slider.value = 0; lastAngle = A_CENTER; $('angle').textContent = '90°';
+  send('C', 'C');
+};
+$('stop').onclick = () => {                        // arrêt immédiat des moteurs
+  accel.value = 0; lastSpeed = 0; $('speed').textContent = '0%';
+  send('M', 'M0');
+};
+$('trimMinus').onclick = () => setTrim(trim - 1);
+$('trimPlus').onclick  = () => setTrim(trim + 1);
+$('trim0').onclick     = () => setTrim(0);
+</script>
+</body>
+</html>
